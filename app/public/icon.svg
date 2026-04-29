@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- App background -->
+  <rect width="512" height="512" rx="112" fill="#eff6ff"/>
+  <!-- Barrel body -->
+  <rect x="124" y="178" width="264" height="228" rx="18" fill="#3b82f6"/>
+  <!-- Barrel bands -->
+  <rect x="124" y="238" width="264" height="20" fill="#1d4ed8"/>
+  <rect x="124" y="326" width="264" height="20" fill="#1d4ed8"/>
+  <!-- Water level highlight -->
+  <rect x="142" y="354" width="228" height="46" rx="10" fill="#bfdbfe" opacity="0.55"/>
+  <!-- Barrel top ellipse -->
+  <ellipse cx="256" cy="178" rx="132" ry="24" fill="#2563eb"/>
+  <!-- Spigot -->
+  <rect x="352" y="370" width="48" height="20" rx="7" fill="#1e40af"/>
+  <circle cx="400" cy="380" r="11" fill="#1e40af"/>
+</svg>

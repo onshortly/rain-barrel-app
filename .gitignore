@@ -1,0 +1,14 @@
+# firmware
+firmware/.pio/
+firmware/include/secrets.h
+
+# app
+app/node_modules/
+app/dist/
+app/dist-ssr/
+app/.env
+app/*.local
+
+# OS
+.DS_Store
+Thumbs.db
