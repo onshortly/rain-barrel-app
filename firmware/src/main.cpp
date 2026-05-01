@@ -16,8 +16,8 @@ const int PRESSURE_PIN = 34;  // SEN0257 analog out
 // SEN0257 voltage divider: 10kΩ → 20kΩ, scales 4.5V → 3.0V
 const float DIVIDER_RATIO = 20.0f / (10.0f + 20.0f);
 
-#define RELAY_ON  LOW
-#define RELAY_OFF HIGH
+#define RELAY_ON  HIGH
+#define RELAY_OFF LOW
 
 // ── Device config (persisted in NVS via Preferences) ─────────────────────────
 // To set config over serial, flash a one-time setup sketch that calls prefs.putString()/putFloat().
