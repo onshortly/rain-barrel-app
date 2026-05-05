@@ -1,0 +1,14 @@
+name = "rain-barrel-worker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["0 10 * * *"]  # 10:00 UTC daily — runs before typical morning watering
+
+[vars]
+MQTT_BROKER = "wss://50174ec5ff5d44fcaf17a8ed159e9cf1.s1.eu.hivemq.cloud:8884/mqtt"
+MQTT_USER = "ons_hortly"
+RAIN_PROBABILITY_THRESHOLD = "50"
+
+# MQTT_PASS — set via: wrangler secret put MQTT_PASS

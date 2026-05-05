@@ -7,6 +7,10 @@ export interface DeviceConfig {
   capacity_gal: number;
   height_in: number;
   sensor_offset_in: number;
+  schedule_interval_h: number;    // 0 = disabled; stored in hours
+  schedule_duration_min: number;
+  latitude: number;
+  longitude: number;
 }
 
 export interface BarrelStatus {

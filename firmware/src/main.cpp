@@ -6,10 +6,11 @@
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <time.h>
 #include "secrets.h"
 
 // ── Pins ──────────────────────────────────────────────────────────────────────
-const int RELAY_PIN    = 26;  // HiLetgo relay IN (active LOW: LOW = pump ON)
+const int RELAY_PIN    = 26;  // HiLetgo relay IN (active HIGH: HIGH = pump ON)
 const int FLOW_PIN     = 27;  // YF-S201 signal wire
 const int PRESSURE_PIN = 34;  // SEN0257 analog out
 
@@ -20,14 +21,16 @@ const float DIVIDER_RATIO = 20.0f / (10.0f + 20.0f);
 #define RELAY_OFF LOW
 
 // ── Device config (persisted in NVS via Preferences) ─────────────────────────
-// To set config over serial, flash a one-time setup sketch that calls prefs.putString()/putFloat().
-// Defaults match a standard 55-gallon drum.
 struct DeviceConfig {
-  char  friendly_name[64];
-  char  container_type[16];  // "barrel" | "tote" | "tank"
-  float capacity_gal;
-  float height_in;
-  float sensor_offset_in;    // inches from sensor face to the 0-fill waterline
+  char     friendly_name[64];
+  char     container_type[16];  // "barrel" | "tote" | "tank"
+  float    capacity_gal;
+  float    height_in;
+  float    sensor_offset_in;
+  float    schedule_interval_h;    // 0 = disabled; hours between waterings
+  uint16_t schedule_duration_min;  // how long to run the pump
+  float    latitude;
+  float    longitude;
 };
 
 static DeviceConfig cfg;
@@ -52,6 +55,11 @@ volatile uint32_t pulseCount = 0;
 unsigned long lastFlowMs = 0;
 unsigned long lastFillMs = 0;
 
+// ── Schedule state ────────────────────────────────────────────────────────────
+static uint32_t next_water_epoch = 0;   // unix epoch of next scheduled watering
+static bool     skip_next        = false;
+static uint32_t pump_off_at_ms   = 0;   // millis() at which to auto-off (0 = no timer)
+
 WiFiClientSecure espClient;
 PubSubClient     mqtt(espClient);
 
@@ -63,9 +71,17 @@ void loadConfig() {
   prefs.begin("device-cfg", true);
   prefs.getString("name",      cfg.friendly_name,  sizeof(cfg.friendly_name));
   prefs.getString("type",      cfg.container_type, sizeof(cfg.container_type));
-  cfg.capacity_gal     = prefs.getFloat("cap_gal",   55.0f);
-  cfg.height_in        = prefs.getFloat("height_in", 33.5f);
-  cfg.sensor_offset_in = prefs.getFloat("offset_in",  0.0f);
+  cfg.capacity_gal          = prefs.getFloat ("cap_gal",   55.0f);
+  cfg.height_in             = prefs.getFloat ("height_in", 33.5f);
+  cfg.sensor_offset_in      = prefs.getFloat ("offset_in",  0.0f);
+  cfg.schedule_interval_h   = prefs.getFloat ("sched_int",  0.0f);
+  cfg.schedule_duration_min = prefs.getUShort("sched_dur",    30);
+  cfg.latitude              = prefs.getFloat ("latitude",   0.0f);
+  cfg.longitude             = prefs.getFloat ("longitude",  0.0f);
+  prefs.end();
+
+  prefs.begin("schedule", true);
+  next_water_epoch = prefs.getUInt("next_water", 0);
   prefs.end();
 
   if (cfg.friendly_name[0]  == '\0') strlcpy(cfg.friendly_name,  "Rain Barrel", sizeof(cfg.friendly_name));
@@ -79,11 +95,15 @@ void saveConfig() {
   prefs.putFloat ("cap_gal",   cfg.capacity_gal);
   prefs.putFloat ("height_in", cfg.height_in);
   prefs.putFloat ("offset_in", cfg.sensor_offset_in);
+  prefs.putFloat ("sched_int", cfg.schedule_interval_h);
+  prefs.putUShort("sched_dur", cfg.schedule_duration_min);
+  prefs.putFloat ("latitude",  cfg.latitude);
+  prefs.putFloat ("longitude", cfg.longitude);
   prefs.end();
 }
 
 // ── Pressure → water level ────────────────────────────────────────────────────
-// Hydrostatic: 1 inch H₂O ≈ 0.249 kPa → 1 kPa ≈ 4.015 inches
+// Hydrostatic: 1 inch H₂O ≈ 0.249 kPa
 float waterLevelIn() {
   float inches = (pressureKpa / 0.249f) - cfg.sensor_offset_in;
   return constrain(inches, 0.0f, cfg.height_in);
@@ -91,20 +111,28 @@ float waterLevelIn() {
 
 // ── MQTT publish ──────────────────────────────────────────────────────────────
 void publishConfig() {
-  char buf[256];
+  char buf[512];
   snprintf(buf, sizeof(buf),
     "{\"device_id\":\"%s\","
     "\"friendly_name\":\"%s\","
     "\"container_type\":\"%s\","
     "\"capacity_gal\":%.1f,"
     "\"height_in\":%.1f,"
-    "\"sensor_offset_in\":%.2f}",
+    "\"sensor_offset_in\":%.2f,"
+    "\"schedule_interval_h\":%.2f,"
+    "\"schedule_duration_min\":%u,"
+    "\"latitude\":%.4f,"
+    "\"longitude\":%.4f}",
     DEVICE_ID.c_str(),
     cfg.friendly_name,
     cfg.container_type,
     cfg.capacity_gal,
     cfg.height_in,
-    cfg.sensor_offset_in
+    cfg.sensor_offset_in,
+    cfg.schedule_interval_h,
+    cfg.schedule_duration_min,
+    cfg.latitude,
+    cfg.longitude
   );
   mqtt.publish(TOPIC_CONFIG.c_str(), buf, true);  // retained
 }
@@ -134,9 +162,46 @@ void publishStatus() {
 // ── Pump control ──────────────────────────────────────────────────────────────
 void setPump(bool on) {
   pumpState = on;
+  if (!on) pump_off_at_ms = 0;
   digitalWrite(RELAY_PIN, on ? RELAY_ON : RELAY_OFF);
   Serial.println("Pump: " + String(on ? "ON" : "OFF"));
   publishStatus();
+}
+
+// ── Schedule ──────────────────────────────────────────────────────────────────
+void checkSchedule() {
+  if (cfg.schedule_interval_h <= 0.0f || cfg.schedule_duration_min == 0) return;
+
+  time_t now;
+  time(&now);
+  if (now < 1000000000UL) return;  // NTP not yet synced
+
+  if (next_water_epoch == 0) {
+    // First run — schedule first watering one interval from now
+    next_water_epoch = (uint32_t)now + (uint32_t)(cfg.schedule_interval_h * 3600.0f);
+    prefs.begin("schedule", false);
+    prefs.putUInt("next_water", next_water_epoch);
+    prefs.end();
+    Serial.printf("Schedule: first watering at epoch %u\n", next_water_epoch);
+    return;
+  }
+
+  if ((uint32_t)now >= next_water_epoch) {
+    // Advance to next slot before acting so we never drift
+    next_water_epoch += (uint32_t)(cfg.schedule_interval_h * 3600.0f);
+    prefs.begin("schedule", false);
+    prefs.putUInt("next_water", next_water_epoch);
+    prefs.end();
+
+    if (skip_next) {
+      skip_next = false;
+      Serial.println("Schedule: watering skipped (rain suppression)");
+    } else if (!pumpState) {
+      Serial.printf("Schedule: starting %u-minute watering\n", cfg.schedule_duration_min);
+      setPump(true);
+      pump_off_at_ms = millis() + ((uint32_t)cfg.schedule_duration_min * 60000UL);
+    }
+  }
 }
 
 // ── MQTT callback ─────────────────────────────────────────────────────────────
@@ -150,6 +215,17 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
     if      (message == "pump_on")     setPump(true);
     else if (message == "pump_off")    setPump(false);
     else if (message == "pump_toggle") setPump(!pumpState);
+    else if (message == "pump_skip") {
+      skip_next = true;
+      Serial.println("Next scheduled watering will be skipped");
+    } else if (message.startsWith("pump_on_timed:")) {
+      int minutes = message.substring(14).toInt();
+      if (minutes > 0) {
+        setPump(true);
+        pump_off_at_ms = millis() + ((uint32_t)minutes * 60000UL);
+        Serial.printf("Pump ON for %d minutes\n", minutes);
+      }
+    }
   } else if (topicStr == TOPIC_DISCOVER) {
     publishConfig();
   } else if (topicStr == TOPIC_CONFIG_SET) {
@@ -159,9 +235,21 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
         strlcpy(cfg.friendly_name,  doc["friendly_name"],  sizeof(cfg.friendly_name));
       if (doc["container_type"].is<const char*>())
         strlcpy(cfg.container_type, doc["container_type"], sizeof(cfg.container_type));
-      if (!doc["capacity_gal"].isNull())     cfg.capacity_gal     = doc["capacity_gal"];
-      if (!doc["height_in"].isNull())        cfg.height_in        = doc["height_in"];
-      if (!doc["sensor_offset_in"].isNull()) cfg.sensor_offset_in = doc["sensor_offset_in"];
+      if (!doc["capacity_gal"].isNull())           cfg.capacity_gal          = doc["capacity_gal"];
+      if (!doc["height_in"].isNull())              cfg.height_in             = doc["height_in"];
+      if (!doc["sensor_offset_in"].isNull())       cfg.sensor_offset_in      = doc["sensor_offset_in"];
+      if (!doc["schedule_duration_min"].isNull())  cfg.schedule_duration_min = doc["schedule_duration_min"];
+      if (!doc["latitude"].isNull())               cfg.latitude              = doc["latitude"];
+      if (!doc["longitude"].isNull())              cfg.longitude             = doc["longitude"];
+
+      if (!doc["schedule_interval_h"].isNull()) {
+        cfg.schedule_interval_h = doc["schedule_interval_h"];
+        // Reset next watering so it recalculates from now
+        next_water_epoch = 0;
+        prefs.begin("schedule", false);
+        prefs.putUInt("next_water", 0);
+        prefs.end();
+      }
 
       saveConfig();
       publishConfig();
@@ -263,6 +351,8 @@ void setup() {
   analogSetPinAttenuation(PRESSURE_PIN, ADC_11db);
 
   connectWiFi();
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
   espClient.setInsecure();  // TODO: replace with setCACert() for production
   mqtt.setServer(MQTT_BROKER, MQTT_PORT);
   mqtt.setCallback(onMessage);
@@ -277,6 +367,19 @@ void loop() {
   mqtt.loop();
 
   updateSensors();
+
+  // Timed pump auto-off
+  if (pump_off_at_ms != 0 && millis() >= pump_off_at_ms) {
+    Serial.println("Timed pump shutoff");
+    setPump(false);
+  }
+
+  // Schedule check (every 60 s is more than precise enough)
+  static unsigned long lastScheduleCheck = 0;
+  if (millis() - lastScheduleCheck >= 60000) {
+    lastScheduleCheck = millis();
+    checkSchedule();
+  }
 
   static unsigned long lastStatus = 0;
   if (millis() - lastStatus > 30000) {

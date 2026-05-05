@@ -1,0 +1,17 @@
+{
+  "name": "rain-barrel-worker",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "mqtt": "^5.15.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "~5.9.3",
+    "wrangler": "^3.0.0"
+  }
+}

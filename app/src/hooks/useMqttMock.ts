@@ -18,6 +18,10 @@ const MOCK_INITIAL: DiscoveredDevice[] = [
       capacity_gal: 55,
       height_in: 33.5,
       sensor_offset_in: 0,
+      schedule_interval_h: 0,
+      schedule_duration_min: 30,
+      latitude: 0,
+      longitude: 0,
     },
     status: {
       pump: false,
@@ -38,6 +42,10 @@ const MOCK_INITIAL: DiscoveredDevice[] = [
       capacity_gal: 275,
       height_in: 46,
       sensor_offset_in: 0,
+      schedule_interval_h: 0,
+      schedule_duration_min: 30,
+      latitude: 0,
+      longitude: 0,
     },
     status: {
       pump: false,

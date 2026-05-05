@@ -1,0 +1,12 @@
+node_modules
+dist
+.wrangler
+*.local
+.dev.vars
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.sw?

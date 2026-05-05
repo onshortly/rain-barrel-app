@@ -77,6 +77,9 @@ function DeviceCard({
   const { config, status, online } = device;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<DeviceConfig>(config);
+  const [intervalUnit, setIntervalUnit] = useState<"hours" | "days">(
+    config.schedule_interval_h >= 24 ? "days" : "hours",
+  );
 
   const isOpen = status?.pump ?? false;
   const fillPct = status
@@ -89,6 +92,7 @@ function DeviceCard({
 
   const startEdit = () => {
     setDraft(config);
+    setIntervalUnit(config.schedule_interval_h >= 24 ? "days" : "hours");
     setEditing(true);
   };
 
@@ -224,6 +228,111 @@ function DeviceCard({
               }
             />
           </Field>
+
+          {/* Schedule */}
+          <div
+            style={{
+              borderTop: "1px solid #e2e8f0",
+              marginTop: 4,
+              paddingTop: 10,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: "#94a3b8",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              Watering Schedule
+            </span>
+          </div>
+          <Field label="Water every">
+            <input
+              style={{ ...inputStyle, flex: "0 0 60px", width: 60 }}
+              type="number"
+              min={0}
+              step={1}
+              value={
+                intervalUnit === "days"
+                  ? Math.round(draft.schedule_interval_h / 24) || 0
+                  : draft.schedule_interval_h
+              }
+              onChange={(e) => {
+                const val = parseFloat(e.target.value) || 0;
+                setDraft((d) => ({
+                  ...d,
+                  schedule_interval_h:
+                    intervalUnit === "days" ? val * 24 : val,
+                }));
+              }}
+            />
+            <select
+              style={{ ...inputStyle, flex: "0 0 auto" }}
+              value={intervalUnit}
+              onChange={(e) =>
+                setIntervalUnit(e.target.value as "hours" | "days")
+              }
+            >
+              <option value="hours">hours</option>
+              <option value="days">days</option>
+            </select>
+            <span style={{ fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" }}>
+              0 = off
+            </span>
+          </Field>
+          {draft.schedule_interval_h > 0 && (
+            <>
+              <Field label="Duration (min)">
+                <input
+                  style={inputStyle}
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={draft.schedule_duration_min}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      schedule_duration_min: parseInt(e.target.value) || 0,
+                    }))
+                  }
+                />
+              </Field>
+              <Field label="Latitude">
+                <input
+                  style={inputStyle}
+                  type="number"
+                  step={0.0001}
+                  value={draft.latitude || ""}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      latitude: parseFloat(e.target.value) || 0,
+                    }))
+                  }
+                  placeholder="e.g. 37.7749"
+                />
+              </Field>
+              <Field label="Longitude">
+                <input
+                  style={inputStyle}
+                  type="number"
+                  step={0.0001}
+                  value={draft.longitude || ""}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      longitude: parseFloat(e.target.value) || 0,
+                    }))
+                  }
+                  placeholder="e.g. -122.4194"
+                />
+              </Field>
+            </>
+          )}
+
           <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
             <button onClick={saveEdit} style={saveBtnStyle}>
               Save
