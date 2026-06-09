@@ -17,6 +17,19 @@ const int PRESSURE_PIN = 34;  // SEN0257 analog out
 // SEN0257 voltage divider: 10kΩ → 20kΩ, scales 4.5V → 3.0V
 const float DIVIDER_RATIO = 20.0f / (10.0f + 20.0f);
 
+// Pressure transducer transfer function: output rises 0.5V → 4.5V (a 4.0V span)
+// across 0 → PRESSURE_FS_KPA.
+//
+// IMPORTANT: PRESSURE_FS_KPA is the sensor's *actual* full-scale, which is ~37.5
+// kPa (≈5 psi) — NOT the 1200 kPa (1.2 MPa) that was originally assumed here.
+// That 32× mismatch made every reading ~32× too high and pegged the level at
+// 100%. Calibrated against a known 75 gal / ~12.5" (~3.1 kPa) reading that the
+// old constant reported as 99.7 kPa. Re-tune this if you verify against the
+// tote markings at another level; trim the zero with "Sensor offset (in)".
+const float PRESSURE_V_ZERO = 0.5f;   // sensor output at 0 kPa
+const float PRESSURE_V_SPAN = 4.0f;   // 0.5V..4.5V
+const float PRESSURE_FS_KPA = 37.5f;  // pressure at full (4.5V) output
+
 #define RELAY_ON  HIGH
 #define RELAY_OFF LOW
 
@@ -27,6 +40,8 @@ struct DeviceConfig {
   float    capacity_gal;
   float    height_in;
   float    sensor_offset_in;
+  float    pressure_fs_kpa;        // pressure sensor full-scale (kPa) at 4.5V out
+  float    pump_gpm;               // pump flow rate, gallons/min (0 = unknown)
   float    schedule_interval_h;    // 0 = disabled; hours between waterings
   uint16_t schedule_duration_min;  // how long to run the pump
   float    latitude;
@@ -74,6 +89,8 @@ void loadConfig() {
   cfg.capacity_gal          = prefs.getFloat ("cap_gal",   55.0f);
   cfg.height_in             = prefs.getFloat ("height_in", 33.5f);
   cfg.sensor_offset_in      = prefs.getFloat ("offset_in",  0.0f);
+  cfg.pressure_fs_kpa       = prefs.getFloat ("press_fs",   PRESSURE_FS_KPA);
+  cfg.pump_gpm              = prefs.getFloat ("pump_gpm",   0.0f);
   cfg.schedule_interval_h   = prefs.getFloat ("sched_int",  0.0f);
   cfg.schedule_duration_min = prefs.getUShort("sched_dur",    30);
   cfg.latitude              = prefs.getFloat ("latitude",   0.0f);
@@ -95,6 +112,8 @@ void saveConfig() {
   prefs.putFloat ("cap_gal",   cfg.capacity_gal);
   prefs.putFloat ("height_in", cfg.height_in);
   prefs.putFloat ("offset_in", cfg.sensor_offset_in);
+  prefs.putFloat ("press_fs",  cfg.pressure_fs_kpa);
+  prefs.putFloat ("pump_gpm",  cfg.pump_gpm);
   prefs.putFloat ("sched_int", cfg.schedule_interval_h);
   prefs.putUShort("sched_dur", cfg.schedule_duration_min);
   prefs.putFloat ("latitude",  cfg.latitude);
@@ -119,6 +138,8 @@ void publishConfig() {
     "\"capacity_gal\":%.1f,"
     "\"height_in\":%.1f,"
     "\"sensor_offset_in\":%.2f,"
+    "\"pressure_fs_kpa\":%.2f,"
+    "\"pump_gpm\":%.2f,"
     "\"schedule_interval_h\":%.2f,"
     "\"schedule_duration_min\":%u,"
     "\"latitude\":%.4f,"
@@ -129,6 +150,8 @@ void publishConfig() {
     cfg.capacity_gal,
     cfg.height_in,
     cfg.sensor_offset_in,
+    cfg.pressure_fs_kpa,
+    cfg.pump_gpm,
     cfg.schedule_interval_h,
     cfg.schedule_duration_min,
     cfg.latitude,
@@ -238,6 +261,8 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       if (!doc["capacity_gal"].isNull())           cfg.capacity_gal          = doc["capacity_gal"];
       if (!doc["height_in"].isNull())              cfg.height_in             = doc["height_in"];
       if (!doc["sensor_offset_in"].isNull())       cfg.sensor_offset_in      = doc["sensor_offset_in"];
+      if (!doc["pressure_fs_kpa"].isNull())        cfg.pressure_fs_kpa       = doc["pressure_fs_kpa"];
+      if (!doc["pump_gpm"].isNull())               cfg.pump_gpm              = doc["pump_gpm"];
       if (!doc["schedule_duration_min"].isNull())  cfg.schedule_duration_min = doc["schedule_duration_min"];
       if (!doc["latitude"].isNull())               cfg.latitude              = doc["latitude"];
       if (!doc["longitude"].isNull())              cfg.longitude             = doc["longitude"];
@@ -303,13 +328,21 @@ void updateSensors() {
     lastFlowMs       = now;
   }
 
-  // Pressure (SEN0257: 0.5V = 0 kPa, 4.5V = 1200 kPa)
+  // Pressure → see PRESSURE_FS_KPA above. With the correct ~37.5 kPa full-scale
+  // a full barrel swings the ADC pin by hundreds of mV, so the reading is well
+  // resolved. analogReadMilliVolts() applies the chip's factory eFuse
+  // calibration (accurate volts, not raw/4095*3.3) and we average to cut noise.
+  // Any residual zero-offset is trimmed in the app via "Sensor offset (in)".
   if (now - lastFillMs >= 1000) {
-    long sum = 0;
-    for (int i = 0; i < 10; i++) sum += analogRead(PRESSURE_PIN);
-    float adcVoltage    = (sum / 10.0f / 4095.0f) * 3.3f;
+    const int N = 16;
+    uint32_t mvSum = 0;
+    for (int i = 0; i < N; i++) mvSum += analogReadMilliVolts(PRESSURE_PIN);
+    float adcVoltage    = (mvSum / (float)N) / 1000.0f;   // calibrated volts at the pin
     float sensorVoltage = adcVoltage / DIVIDER_RATIO;
-    pressureKpa         = constrain((sensorVoltage - 0.5f) / 4.0f * 1200.0f, 0.0f, 1200.0f);
+    float fsKpa         = cfg.pressure_fs_kpa > 0.0f ? cfg.pressure_fs_kpa : PRESSURE_FS_KPA;
+    pressureKpa         = constrain(
+      (sensorVoltage - PRESSURE_V_ZERO) / PRESSURE_V_SPAN * fsKpa,
+      0.0f, fsKpa);
     lastFillMs          = now;
   }
 }

@@ -7,6 +7,8 @@ export interface DeviceConfig {
   capacity_gal: number;
   height_in: number;
   sensor_offset_in: number;
+  pressure_fs_kpa: number;        // pressure sensor full-scale (kPa) at 4.5V out
+  pump_gpm: number;               // pump flow rate, gallons/min (0 = unknown)
   schedule_interval_h: number;    // 0 = disabled; stored in hours
   schedule_duration_min: number;
   latitude: number;

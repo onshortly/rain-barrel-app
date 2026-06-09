@@ -17,6 +17,8 @@ const char*  CONTAINER_TYPE   = "barrel";        // barrel | tote | tank
 const float  CAPACITY_GAL     = 55.0f;           // total capacity in gallons
 const float  HEIGHT_IN        = 33.5f;           // interior height in inches
 const float  SENSOR_OFFSET_IN = 0.0f;            // inches from sensor face to 0-fill line
+const float  PRESSURE_FS_KPA  = 37.5f;           // pressure sensor full-scale at 4.5V (kPa)
+const float  PUMP_GPM         = 0.0f;            // pump flow rate, gallons/min (0 = unknown)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void setup() {
@@ -31,6 +33,8 @@ void setup() {
   prefs.putFloat ("cap_gal",   CAPACITY_GAL);
   prefs.putFloat ("height_in", HEIGHT_IN);
   prefs.putFloat ("offset_in", SENSOR_OFFSET_IN);
+  prefs.putFloat ("press_fs",  PRESSURE_FS_KPA);
+  prefs.putFloat ("pump_gpm",  PUMP_GPM);
   prefs.end();
 
   Serial.println("Config written to NVS:");
@@ -39,6 +43,8 @@ void setup() {
   Serial.printf("  capacity_gal:     %.1f\n", CAPACITY_GAL);
   Serial.printf("  height_in:        %.1f\"\n", HEIGHT_IN);
   Serial.printf("  sensor_offset_in: %.2f\"\n", SENSOR_OFFSET_IN);
+  Serial.printf("  pressure_fs_kpa:  %.2f\n", PRESSURE_FS_KPA);
+  Serial.printf("  pump_gpm:         %.2f\n", PUMP_GPM);
   Serial.println("\nDone. Re-flash the main firmware now.");
 }
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRainBarrel } from "./hooks/useRainBarrel";
 import { FillMeter } from "./components/FillMeter";
 import { FlowTicker } from "./components/FlowTicker";
@@ -16,7 +16,10 @@ function App() {
   return (
     <div
       style={{
-        padding: 32,
+        width: "100%",
+        maxWidth: 520,
+        margin: "0 auto",
+        padding: "24px 16px 48px",
         fontFamily: "system-ui, sans-serif",
       }}
     >
@@ -82,13 +85,46 @@ function DeviceCard({
   );
 
   const isOpen = status?.pump ?? false;
-  const fillPct = status
-    ? Math.min(
-        100,
-        Math.max(0, (status.water_level_in / config.height_in) * 100),
-      )
-    : 0;
-  const currentGal = (fillPct / 100) * config.capacity_gal;
+
+  // Gallons implied by the pressure sensor's reported water level.
+  const sensorGal = useMemo(() => {
+    if (!status || config.height_in <= 0) return 0;
+    const pct = Math.min(
+      100,
+      Math.max(0, (status.water_level_in / config.height_in) * 100),
+    );
+    return (pct / 100) * config.capacity_gal;
+  }, [status, config.height_in, config.capacity_gal]);
+
+  // Live estimate: while the pump runs we draw down at the configured pump GPM,
+  // resyncing to the sensor reading each time a fresh status arrives.
+  const [estGal, setEstGal] = useState(sensorGal);
+  const [syncedGal, setSyncedGal] = useState(sensorGal);
+
+  // Resync to the sensor only while the pump is idle. During a pump run the
+  // GPM-based estimate is more trustworthy than the low-signal pressure sensor,
+  // so we don't let an incoming status message snap the level back up. This is a
+  // render-phase update (React's "adjust state when a prop changes" pattern),
+  // which avoids a cascading-render effect.
+  if (!isOpen && sensorGal !== syncedGal) {
+    setSyncedGal(sensorGal);
+    setEstGal(sensorGal);
+  }
+
+  const pumpGpm = config.pump_gpm || 0;
+  useEffect(() => {
+    if (!isOpen || pumpGpm <= 0) return;
+    const id = setInterval(() => {
+      setEstGal((prev) => Math.max(0, prev - pumpGpm / 60));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isOpen, pumpGpm]);
+
+  const currentGal = estGal;
+  const fillPct =
+    config.capacity_gal > 0
+      ? Math.min(100, Math.max(0, (estGal / config.capacity_gal) * 100))
+      : 0;
 
   const startEdit = () => {
     setDraft(config);
@@ -224,6 +260,36 @@ function DeviceCard({
                 setDraft((d) => ({
                   ...d,
                   sensor_offset_in: parseFloat(e.target.value) || 0,
+                }))
+              }
+            />
+          </Field>
+          <Field label="Sensor full-scale (kPa)">
+            <input
+              style={inputStyle}
+              type="number"
+              min={1}
+              step={0.5}
+              value={draft.pressure_fs_kpa ?? 37.5}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  pressure_fs_kpa: parseFloat(e.target.value) || 0,
+                }))
+              }
+            />
+          </Field>
+          <Field label="Pump rate (GPM)">
+            <input
+              style={inputStyle}
+              type="number"
+              min={0}
+              step={0.1}
+              value={draft.pump_gpm ?? 0}
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  pump_gpm: parseFloat(e.target.value) || 0,
                 }))
               }
             />
@@ -379,11 +445,18 @@ function DeviceCard({
             fontSize: 13,
             color: "#94a3b8",
             display: "flex",
-            gap: 16,
+            flexWrap: "wrap",
+            gap: "4px 16px",
           }}
         >
           <span>Uptime: {formatUptime(status.uptime)}</span>
           <span>WiFi: {status.rssi} dBm</span>
+          {/* Diagnostic: raw sensor reading before the height clamp, so an
+              over-reading pressure sensor is visible instead of pegged at 100%. */}
+          <span>
+            Pressure: {status.pressure_kpa.toFixed(2)} kPa (~
+            {(status.pressure_kpa / 0.249).toFixed(1)} in)
+          </span>
         </div>
       )}
     </div>
@@ -398,18 +471,26 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       <span
         style={{
           fontSize: 12,
+          fontWeight: 500,
           color: "#64748b",
-          width: 130,
-          flexShrink: 0,
         }}
       >
         {label}
       </span>
-      {children}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
@@ -443,12 +524,15 @@ function formatUptime(seconds: number): string {
 
 const inputStyle: React.CSSProperties = {
   flex: 1,
-  padding: "5px 8px",
-  fontSize: 13,
+  minWidth: 0,
+  padding: "7px 9px",
+  fontSize: 14,
   border: "1px solid #cbd5e1",
   borderRadius: 6,
   background: "#fff",
-  width: "100%",
+  color: "#0f172a",
+  colorScheme: "light",
+  boxSizing: "border-box",
 };
 
 const editBtnStyle: React.CSSProperties = {
